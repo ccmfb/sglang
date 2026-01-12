@@ -430,13 +430,14 @@ class RadixCache(BasePrefixCache):
         key = params.key
         value = params.value
         priority = params.priority
+        workflow_metadata = params.workflow_metadata
 
         if value is None:
             value = torch.tensor(key.token_ids, dtype=torch.int64)
 
         key, value = self.maybe_bigram_convert(key, value)
 
-        prefix_len = self._insert_helper(self.root_node, key, value, priority)
+        prefix_len = self._insert_helper(self.root_node, key, value, priority, workflow_metadata=workflow_metadata)
         return InsertResult(prefix_len=prefix_len)
 
     def _page_align_keys(self, key: list) -> list:
@@ -474,8 +475,9 @@ class RadixCache(BasePrefixCache):
         # Radix Cache takes one ref in memory pool
         if is_insert:
             priority = getattr(req, "priority", 0) or 0
+            workflow_metadata = getattr(req, "workflow_metadata", None) or None
             result = self.insert(
-                InsertParams(key=radix_key, value=values, priority=priority)
+                InsertParams(key=radix_key, value=values, priority=priority, workflow_metadata=workflow_metadata)
             )
             new_prefix_len = result.prefix_len
             # Free the duplicates that were already in the tree
@@ -517,6 +519,7 @@ class RadixCache(BasePrefixCache):
                 value=values,
                 chunked=chunked,
                 priority=getattr(req, "priority", 0) or 0,
+                workflow_metadata=getattr(req, "workflow_metadata", None) or None,
             )
         )
         new_prefix_len = result.prefix_len
@@ -682,6 +685,7 @@ class RadixCache(BasePrefixCache):
         new_node.lock_ref = child.lock_ref
         new_node.key = child.key[:split_len]
         new_node.value = child.value[:split_len].clone()
+        new_node.workflow_metadata = child.workflow_metadata
         child.parent = new_node
         child.key = child.key[split_len:]
         child.value = child.value[split_len:].clone()
@@ -694,7 +698,7 @@ class RadixCache(BasePrefixCache):
 
         return new_node
 
-    def _insert_helper(self, node: TreeNode, key: RadixKey, value, priority: int = 0):
+    def _insert_helper(self, node: TreeNode, key: RadixKey, value, priority: int = 0, workflow_metadata: dict | None = None):
         # Convert None priority to 0
         if priority is None:
             priority = 0
@@ -731,6 +735,7 @@ class RadixCache(BasePrefixCache):
             new_node.parent = node
             new_node.key = key
             new_node.value = value.clone()
+            new_node.workflow_metadata = workflow_metadata
             node.children[child_key] = new_node
             self.evictable_size_ += len(key)
             # Hash will be computed lazily during event emission
