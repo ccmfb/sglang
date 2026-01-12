@@ -56,6 +56,7 @@ from sglang.srt.mem_cache.evict_policy import (
     LRUStrategy,
     MRUStrategy,
     PriorityStrategy,
+    StepsToExecutionStrategy
 )
 from sglang.srt.mem_cache.hicache_storage import get_hash_str, hash_str_to_int64
 
@@ -97,7 +98,7 @@ class TreeNode:
 
     counter = 0
 
-    def __init__(self, id: Optional[int] = None, priority: int = 0):
+    def __init__(self, id: Optional[int] = None, priority: int = 0, workflow_metadata: dict | None = None):
         self.children = defaultdict(TreeNode)
         self.parent: TreeNode = None
         self.key: RadixKey = None
@@ -116,6 +117,8 @@ class TreeNode:
         self.hash_value: Optional[List[str]] = None
         # priority for priority-aware eviction
         self.priority = priority
+
+        self.workflow_metadata = workflow_metadata
 
         self.id = TreeNode.counter if id is None else id
         TreeNode.counter += 1
@@ -297,6 +300,9 @@ class RadixCache(BasePrefixCache):
             self.eviction_strategy: EvictionStrategy = FILOStrategy()
         elif self.eviction_policy == "priority":
             self.eviction_strategy: EvictionStrategy = PriorityStrategy()
+        elif self.eviction_policy == "steps-to-execution":
+            print('Using steps-to-execution eviction policy!')
+            self.eviction_strategy: EvictionStrategy = StepsToExecutionStrategy()
         else:
             raise ValueError(
                 f"Unknown eviction policy: {self.eviction_policy}. Supported policies: 'lru', 'lfu', 'fifo', 'mru', 'filo', 'priority'."
