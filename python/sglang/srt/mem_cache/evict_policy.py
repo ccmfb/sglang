@@ -50,4 +50,4 @@ class StepsToExecutionStrategy(EvictionStrategy):
     """Workflow-aware eviction: Caches that won't be needed in the near future are evicted first."""
 
     def get_priority(self, node) -> int:
-        return node.workflow_metadata['steps-to-execution']
+        return node.workflow_eviction_value
