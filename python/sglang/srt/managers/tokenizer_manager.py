@@ -927,6 +927,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                 extra_key=obj.extra_key,
                 need_wait_for_image=obj.need_wait_for_image,
                 num_items_assigned=obj.num_items_assigned,
+                workflow_metadata=obj.workflow_metadata,
             )
         elif isinstance(obj, EmbeddingReqInput):
             tokenized_obj = TokenizedEmbeddingReqInput(
@@ -939,6 +940,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                 priority=obj.priority,
                 dimensions=obj.dimensions,
                 http_worker_ipc=obj.http_worker_ipc,
+                workflow_metadata=obj.workflow_metadata,
             )
 
         return tokenized_obj

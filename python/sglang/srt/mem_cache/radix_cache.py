@@ -111,6 +111,7 @@ class TreeNode:
         self.priority = priority
 
         self.workflow_metadata = workflow_metadata
+        self.workflow_eviction_value: int | None = None
 
         self.id = TreeNode.counter if id is None else id
         TreeNode.counter += 1
@@ -416,6 +417,16 @@ class RadixCache(BasePrefixCache):
         )
 
     def insert(self, key: RadixKey, value=None, chunked=False, priority: int = 0, workflow_metadata: dict | None = None):
+
+        # Updating and printing tree
+        # =============================================
+        if workflow_metadata is not None:
+            self.update_workflow_eviction_value(self.root_node, workflow_metadata['steps_to_execution_map'])
+            
+            if workflow_metadata['show_tree']:
+                print_tree(self.root_node)
+        # =============================================
+
         if self.disable:
             return 0
 
@@ -425,6 +436,17 @@ class RadixCache(BasePrefixCache):
         key, value = self.maybe_bigram_convert(key, value)
 
         return self._insert_helper(self.root_node, key, value, priority, workflow_metadata=workflow_metadata)
+
+    def update_workflow_eviction_value(self, node: TreeNode, value_map: dict):
+        """Updates workflow-aware eviction values."""
+        if node.parent is not None and node.workflow_metadata is not None:
+            agent_id = node.workflow_metadata['agent_id']
+            eviction_value = value_map[agent_id]
+            node.workflow_eviction_value = eviction_value
+
+        children = node.children.items()
+        for _, child_node in children:
+            self.update_workflow_eviction_value(child_node, value_map)
 
     def _page_align_keys(self, key: list) -> list:
         if self.page_size == 1:
@@ -843,6 +865,37 @@ class RadixCache(BasePrefixCache):
         self.kv_event_queue = []
         return events
 
+def print_tree(node, prefix="", is_last=True):
+    """
+    Recursively prints the Radix Tree structure in ASCII format.
+    """
+    connector = "└── " if is_last else "├── "
+    
+    if node.key is None or (len(node.key.token_ids) == 0 and node.parent is None):
+        display = "[ROOT]"
+    else:
+        key = node.key.token_ids
+        key_str = str(key) if len(key) <= 5 else f"{key[:2]}...{key[-1]}"
+        
+        if node.workflow_metadata is not None:
+            agent_id = node.workflow_metadata.get('agent_id')
+            
+            display = f"Key: {key_str} | {agent_id}: {node.workflow_eviction_value}"
+        else:
+            display = f"Key: {key_str}" 
+
+    print(f"{prefix}{connector}{display}")
+
+    # 2. Prepare prefix for the next level
+    child_prefix = prefix + ("    " if is_last else "│   ")
+    
+    # 3. Sort children safely
+    # Keys in children can be ints or tuples (if bigram/extra_key), so we sort by string representation
+    sorted_children = sorted(node.children.items(), key=lambda x: str(x[0]))
+    count = len(sorted_children)
+    
+    for i, (token_id, child_node) in enumerate(sorted_children):
+        print_tree(child_node, child_prefix, is_last=(i == count - 1))
 
 if __name__ == "__main__":
     tree = RadixCache.create_simulated()
