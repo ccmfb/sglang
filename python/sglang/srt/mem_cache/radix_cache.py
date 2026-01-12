@@ -457,6 +457,9 @@ class RadixCache(BasePrefixCache):
             eviction_value = value_map[agent_id]
             node.workflow_eviction_value = eviction_value
 
+        if node.workflow_metadata is None:
+            node.workflow_eviction_value = 9999999
+
         children = node.children.items()
         for _, child_node in children:
             self.update_workflow_eviction_value(child_node, value_map)
@@ -605,6 +608,9 @@ class RadixCache(BasePrefixCache):
         num_evicted = 0
         while num_evicted < num_tokens and len(eviction_heap):
             _priority, x = heapq.heappop(eviction_heap)
+
+            if x.workflow_metadata is not None:
+                print(f'Evicting node with agent_id: {x.workflow_metadata['agent_id']}, and eviction value: {x.workflow_eviction_value}')
 
             self.token_to_kv_pool_allocator.free(x.value)
             num_evicted += len(x.value)
