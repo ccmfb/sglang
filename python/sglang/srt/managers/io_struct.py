@@ -240,6 +240,9 @@ class GenerateReqInput(BaseReq, APIServingTimingMixin):
     # Priority for the request
     priority: Optional[int] = None
 
+    # Workflow information injection
+    workflow_metadata: Optional[dict] = None
+
     # Extra key for classifying the request (e.g. cache_salt)
     extra_key: Optional[Union[List[str], str]] = None
 
@@ -666,6 +669,7 @@ class GenerateReqInput(BaseReq, APIServingTimingMixin):
             ),
             conversation_id=self.conversation_id,
             priority=self.priority,
+            workflow_metadata=self.workflow_metadata,
             extra_key=self.extra_key,
             no_logs=self.no_logs,
             custom_labels=self.custom_labels,
@@ -737,6 +741,9 @@ class TokenizedGenerateReqInput(BaseReq):
     # Priority for the request
     priority: Optional[int] = None
 
+    # Workflow metadata 
+    workflow_metadata: Optional[dict] = None
+
     # Extra key for classifying the request (e.g. cache_salt)
     extra_key: Optional[str] = None
 
@@ -802,6 +809,8 @@ class EmbeddingReqInput(BaseReq, APIServingTimingMixin):
     is_cross_encoder_request: bool = False
     # Priority for the request
     priority: Optional[int] = None
+    # Workflow metadata
+    workflow_metadata: Optional[dict] = None
 
     # For background responses (OpenAI responses API)
     background: bool = False
@@ -914,6 +923,8 @@ class TokenizedEmbeddingReqInput(BaseReq):
     data_parallel_rank: Optional[int] = None
     # Priority for the request
     priority: Optional[int] = None
+    # Workflow metadata
+    workflow_metadata: Optional[dict] = None
     # The number of dimensions the resulting output embeddings should have. It is applicable for Matryoshka Embeddings.
     dimensions: Optional[int] = None
 

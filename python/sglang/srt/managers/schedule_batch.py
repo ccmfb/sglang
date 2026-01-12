@@ -519,6 +519,7 @@ class Req:
         data_parallel_rank: Optional[int] = None,
         vocab_size: Optional[int] = None,
         priority: Optional[int] = None,
+        workflow_metadata: Optional[dict] = None,
         metrics_collector: Optional[SchedulerMetricsCollector] = None,
         extra_key: Optional[str] = None,
         dimensions: Optional[int] = None,
@@ -608,6 +609,7 @@ class Req:
         self.eos_token_ids = eos_token_ids
         self.vocab_size = vocab_size
         self.priority = priority
+        self.workflow_metadata = workflow_metadata
 
         # For incremental decoding
         # ----- | --------- read_ids -------|
