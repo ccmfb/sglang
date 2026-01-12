@@ -162,7 +162,7 @@ NSA_CHOICES = [
     "aiter",
 ]
 
-RADIX_EVICTION_POLICY_CHOICES = ["lru", "lfu"]
+RADIX_EVICTION_POLICY_CHOICES = ["lru", "lfu", "steps-to-execution"]
 
 RL_ON_POLICY_TARGET_CHOICES = ["fsdp"]
 

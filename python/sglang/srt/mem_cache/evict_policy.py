@@ -44,3 +44,10 @@ class PriorityStrategy(EvictionStrategy):
     def get_priority(self, node: "TreeNode") -> Tuple[int, float]:
         # Return (priority, last_access_time) so lower priority nodes are evicted first
         return (node.priority, node.last_access_time)
+
+
+class StepsToExecutionStrategy(EvictionStrategy):
+    """Workflow-aware eviction: Caches that won't be needed in the near future are evicted first."""
+
+    def get_priority(self, node) -> int:
+        return node.workflow_metadata['steps-to-execution']
