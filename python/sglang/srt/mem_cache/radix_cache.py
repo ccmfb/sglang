@@ -56,7 +56,8 @@ from sglang.srt.mem_cache.evict_policy import (
     LRUStrategy,
     MRUStrategy,
     PriorityStrategy,
-    StepsToExecutionStrategy
+    StepsToExecutionStrategy,
+    LMUStrategy,
 )
 from sglang.srt.mem_cache.hicache_storage import get_hash_str, hash_str_to_int64
 
@@ -158,6 +159,34 @@ class TreeNode:
 
     def __lt__(self, other: "TreeNode"):
         return self.last_access_time < other.last_access_time
+
+    def get_agent_leaf_memory(self):
+        if self.workflow_metadata is None: return 0
+        curr_agent = self.workflow_metadata['agent_id']
+        agent_leaf_size = 0
+
+        # This is a bit too hack-y
+        root_node = None
+        stack = [self]
+        while stack:
+            cur_node = stack.pop()
+            if not cur_node.parent:
+                root_node = cur_node
+                break
+            stack.extend([cur_node.parent])
+
+        stack = list(root_node.children.values())
+        while stack:
+            cur_node = stack.pop()
+            if len(cur_node.children) == 0:
+                if cur_node.lock_ref == 0 and cur_node.workflow_metadata is not None:
+                    if cur_node.workflow_metadata['agent_id'] == curr_agent:
+
+                        agent_leaf_size += len(cur_node.value)
+            else:
+                stack.extend(cur_node.children.values())
+
+        return agent_leaf_size
 
 
 def _check_extra_key(key0: RadixKey, key1: RadixKey):
@@ -304,6 +333,9 @@ class RadixCache(BasePrefixCache):
         elif self.eviction_policy == "steps-to-execution":
             print('Using steps-to-execution eviction policy!')
             self.eviction_strategy: EvictionStrategy = StepsToExecutionStrategy()
+        elif self.eviction_policy == 'lmu':
+            print('using lmu')
+            self.eviction_strategy: EvictionStrategy = LMUStrategy()
         else:
             raise ValueError(
                 f"Unknown eviction policy: {self.eviction_policy}. Supported policies: 'lru', 'lfu', 'fifo', 'mru', 'filo', 'priority'."
