@@ -35,6 +35,8 @@ from sglang.srt.managers.io_struct import (
     ExpertDistributionReqType,
     FlushCacheReqInput,
     FlushCacheReqOutput,
+    GetCacheStatsReq,
+    GetCacheStatsReqOutput,
     GetInternalStateReq,
     GetInternalStateReqOutput,
     GetLoadReqInput,
@@ -207,6 +209,9 @@ class TokenizerCommunicatorMixin:
         self.set_internal_state_communicator = _Communicator(
             self.send_to_scheduler, server_args.dp_size
         )
+        self.get_cache_stats_communicator = _Communicator(
+            self.send_to_scheduler, server_args.dp_size
+        )
         self.expert_distribution_communicator = _Communicator(
             self.send_to_scheduler, server_args.dp_size
         )
@@ -289,6 +294,10 @@ class TokenizerCommunicatorMixin:
                 (
                     SetInternalStateReqOutput,
                     self.set_internal_state_communicator.handle_recv,
+                ),
+                (
+                    GetCacheStatsReqOutput,
+                    self.get_cache_stats_communicator.handle_recv,
                 ),
                 (
                     ExpertDistributionReqOutput,
@@ -702,6 +711,16 @@ class TokenizerCommunicatorMixin:
         )
         # Many DP ranks
         return [res.internal_state for res in responses]
+
+    async def get_cache_stats(
+        self: TokenizerManager,
+        include_history: bool = False,
+        window_seconds: Optional[float] = None,
+    ) -> List[GetCacheStatsReqOutput]:
+        req = GetCacheStatsReq(
+            include_history=include_history, window_seconds=window_seconds
+        )
+        return await self.get_cache_stats_communicator(req)
 
     async def set_internal_state(
         self: TokenizerManager, obj: SetInternalStateReq

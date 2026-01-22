@@ -708,6 +708,50 @@ async def flush_cache():
     )
 
 
+@app.get("/cache_stats")
+async def get_cache_stats(
+    include_history: bool = False, window_seconds: Optional[float] = None
+):
+    """Get cache time series statistics.
+
+    Args:
+        include_history: If true, include the full time series history.
+        window_seconds: Time window for history in seconds. If None, returns all history.
+
+    Returns:
+        Cache statistics including utilization, hit rates, and optionally history.
+    """
+    responses = await _global_state.tokenizer_manager.get_cache_stats(
+        include_history=include_history, window_seconds=window_seconds
+    )
+
+    # If time series is not enabled on any scheduler, return an error
+    if not any(r.enabled for r in responses):
+        return ORJSONResponse(
+            content={
+                "error": "Cache time series tracking is not enabled. "
+                "Start the server with --enable-cache-timeseries to enable it."
+            },
+            status_code=HTTPStatus.BAD_REQUEST,
+        )
+
+    # Aggregate stats from all DP ranks
+    result = {"dp_stats": []}
+    for i, resp in enumerate(responses):
+        if resp.enabled and resp.stats:
+            dp_stat = {"dp_rank": i, **resp.stats}
+            if include_history and resp.history:
+                dp_stat["history"] = resp.history
+            result["dp_stats"].append(dp_stat)
+
+    # If single DP, flatten the response
+    if len(result["dp_stats"]) == 1:
+        result = result["dp_stats"][0]
+        del result["dp_rank"]
+
+    return ORJSONResponse(content=result, status_code=200)
+
+
 @app.api_route("/clear_hicache_storage_backend", methods=["GET", "POST"])
 async def clear_hicache_storage_backend():
     """Clear the hierarchical cache storage backend."""

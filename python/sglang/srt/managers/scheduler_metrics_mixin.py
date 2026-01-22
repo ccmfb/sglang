@@ -255,6 +255,7 @@ class SchedulerMetricsMixin:
             self.metrics_collector.log_stats(self.stats)
             self._emit_kv_metrics()
         self._publish_kv_events()
+        self._take_cache_timeseries_snapshot()
 
     def log_prefill_stats_late(self: Scheduler, batch: Optional[ScheduleBatch]):
         """This should be called after `batch` has gathered enough metadata."""
@@ -420,6 +421,7 @@ class SchedulerMetricsMixin:
             self.metrics_collector.log_stats(self.stats)
             self._emit_kv_metrics()
         self._publish_kv_events()
+        self._take_cache_timeseries_snapshot()
 
     def log_decode_stats_every_iteration(
         self: Scheduler, batch: ScheduleBatch, num_accepted_tokens: int
@@ -575,3 +577,8 @@ class SchedulerMetricsMixin:
             ),
         ):
             yield
+
+    def _take_cache_timeseries_snapshot(self: Scheduler):
+        """Take a snapshot for cache time series tracking if enabled."""
+        if hasattr(self, "tree_cache") and self.tree_cache is not None:
+            self.tree_cache.take_timeseries_snapshot()

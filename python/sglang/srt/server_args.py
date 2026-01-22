@@ -312,6 +312,11 @@ class ServerArgs:
     disable_hybrid_swa_memory: bool = False
     radix_eviction_policy: str = "lru"
 
+    # Cache time series tracking
+    enable_cache_timeseries: bool = False
+    cache_timeseries_interval: float = 5.0
+    cache_timeseries_history: float = 300.0
+
     # Runtime options
     device: Optional[str] = None
     tp_size: int = 1
@@ -2883,6 +2888,25 @@ class ServerArgs:
             choices=RADIX_EVICTION_POLICY_CHOICES,
             default=ServerArgs.radix_eviction_policy,
             help="The eviction policy of radix trees. 'lru' stands for Least Recently Used, 'lfu' stands for Least Frequently Used.",
+        )
+
+        # Cache time series tracking
+        parser.add_argument(
+            "--enable-cache-timeseries",
+            action="store_true",
+            help="Enable time series tracking for cache metrics (utilization, hit rate, tokens).",
+        )
+        parser.add_argument(
+            "--cache-timeseries-interval",
+            type=float,
+            default=ServerArgs.cache_timeseries_interval,
+            help="Interval in seconds between cache time series snapshots.",
+        )
+        parser.add_argument(
+            "--cache-timeseries-history",
+            type=float,
+            default=ServerArgs.cache_timeseries_history,
+            help="Maximum history to keep for cache time series in seconds.",
         )
 
         # Runtime options

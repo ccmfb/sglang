@@ -52,6 +52,7 @@ from sglang.srt.mem_cache.evict_policy import (
     LMUStrategy,
 )
 from sglang.srt.mem_cache.hicache_storage import get_hash_str, hash_str_to_int64
+from sglang.srt.metrics.cache_timeseries import CacheTimeSeriesTracker
 
 if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import Req
@@ -298,6 +299,14 @@ class RadixCache(BasePrefixCache):
         if params.enable_metrics:
             self.init_metrics_collector()
 
+        # Initialize time series tracker if enabled
+        self.timeseries_tracker: Optional[CacheTimeSeriesTracker] = None
+        if params.enable_cache_timeseries:
+            self.timeseries_tracker = CacheTimeSeriesTracker(
+                max_history_seconds=params.cache_timeseries_history,
+                snapshot_interval=params.cache_timeseries_interval,
+            )
+
         if self.token_to_kv_pool_allocator:
             self.device = self.token_to_kv_pool_allocator.device
         else:
@@ -442,6 +451,13 @@ class RadixCache(BasePrefixCache):
             value = torch.cat(value)
         else:
             value = torch.empty((0,), dtype=torch.int64, device=self.device)
+
+        # Record hit/miss tokens for time series tracking
+        if self.timeseries_tracker is not None:
+            requested_tokens = len(key)
+            matched_tokens = len(value)
+            self.timeseries_tracker.record_match(matched_tokens, requested_tokens)
+
         return MatchResult(
             device_indices=value,
             last_device_node=last_node,
@@ -902,6 +918,38 @@ class RadixCache(BasePrefixCache):
         events = self.kv_event_queue
         self.kv_event_queue = []
         return events
+
+    def take_timeseries_snapshot(self):
+        """Take a snapshot of current cache state for time series tracking.
+
+        This method should be called periodically (e.g., during log_prefill_stats).
+        """
+        if self.timeseries_tracker is not None:
+            self.timeseries_tracker.take_snapshot(self)
+
+    def get_timeseries_stats(self):
+        """Get time series statistics for API response.
+
+        Returns:
+            Dictionary with cache statistics, or None if tracking is disabled.
+        """
+        if self.timeseries_tracker is None:
+            return None
+        return self.timeseries_tracker.get_stats_dict()
+
+    def get_timeseries_history(self, window_seconds=None):
+        """Get time series history for graphing.
+
+        Args:
+            window_seconds: Time window in seconds. If None, returns all history.
+
+        Returns:
+            List of snapshot dictionaries, or None if tracking is disabled.
+        """
+        if self.timeseries_tracker is None:
+            return None
+        return self.timeseries_tracker.get_history(window_seconds)
+
 
 def print_tree(node, prefix="", is_last=True):
     """

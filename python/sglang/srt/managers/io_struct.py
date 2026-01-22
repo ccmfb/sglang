@@ -1459,6 +1459,19 @@ class SetInternalStateReqOutput(BaseReq):
 
 
 @dataclass
+class GetCacheStatsReq(BaseReq):
+    include_history: bool = False
+    window_seconds: Optional[float] = None
+
+
+@dataclass
+class GetCacheStatsReqOutput(BaseReq):
+    stats: Optional[Dict[str, Any]] = None
+    history: Optional[List[Dict[str, Any]]] = None
+    enabled: bool = False
+
+
+@dataclass
 class ProfileReqInput(BaseReq):
     # The output directory
     output_dir: Optional[str] = None
