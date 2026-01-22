@@ -91,6 +91,8 @@ from sglang.srt.managers.io_struct import (
     FlushCacheReqInput,
     FlushCacheReqOutput,
     FreezeGCReq,
+    GetCacheStatsReq,
+    GetCacheStatsReqOutput,
     GetInternalStateReq,
     GetInternalStateReqOutput,
     GetLoadReqInput,
@@ -637,6 +639,9 @@ class Scheduler(
             eviction_policy=server_args.radix_eviction_policy,
             enable_metrics=self.enable_metrics,
             enable_kv_cache_events=self.enable_kv_cache_events,
+            enable_cache_timeseries=server_args.enable_cache_timeseries,
+            cache_timeseries_interval=server_args.cache_timeseries_interval,
+            cache_timeseries_history=server_args.cache_timeseries_history,
             enable_mamba_extra_buffer=server_args.enable_mamba_extra_buffer(),
             pp_rank=self.pp_rank,
             pp_size=self.pp_size,
@@ -1043,6 +1048,7 @@ class Scheduler(
                 (FreezeGCReq, self.handle_freeze_gc),
                 (GetInternalStateReq, self.get_internal_state),
                 (SetInternalStateReq, self.set_internal_state),
+                (GetCacheStatsReq, self.get_cache_stats),
                 (RpcReqInput, self.handle_rpc_request),
                 (ExpertDistributionReq, self.expert_distribution_handle),
                 (LoadLoRAAdapterReqInput, self.load_lora_adapter),
@@ -2615,10 +2621,31 @@ class Scheduler(
         if RECORD_STEP_TIME:
             ret["step_time_dict"] = self.step_time_dict
 
+        # Include cache time series stats if enabled
+        if hasattr(self, "tree_cache") and self.tree_cache is not None:
+            cache_stats = self.tree_cache.get_timeseries_stats()
+            if cache_stats is not None:
+                ret["cache_timeseries"] = cache_stats
+
         # This field is not serializable.
         ret.pop("model_config", None)
 
         return GetInternalStateReqOutput(internal_state=ret)
+
+    def get_cache_stats(self, recv_req: GetCacheStatsReq):
+        """Get cache time series statistics."""
+        if not hasattr(self, "tree_cache") or self.tree_cache is None:
+            return GetCacheStatsReqOutput(enabled=False)
+
+        stats = self.tree_cache.get_timeseries_stats()
+        if stats is None:
+            return GetCacheStatsReqOutput(enabled=False)
+
+        history = None
+        if recv_req.include_history:
+            history = self.tree_cache.get_timeseries_history(recv_req.window_seconds)
+
+        return GetCacheStatsReqOutput(stats=stats, history=history, enabled=True)
 
     def set_internal_state(self, recv_req: SetInternalStateReq):
         server_args_dict = recv_req.server_args
