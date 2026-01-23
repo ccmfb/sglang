@@ -40,6 +40,28 @@ else:
     Image = Any
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Workflow Metadata
+# ──────────────────────────────────────────────────────────────────────────────
+
+WorkflowMeta = Optional[Dict[str, Any]]
+"""Workflow metadata passed through the request pipeline for cache-aware scheduling.
+
+Supports the following fields:
+- agent_id: str - Identifier for the agent making the request
+- steps_to_execution_map: Dict[str, int] - Mapping of agent_id to steps-to-execution
+  values for priority-aware cache eviction
+- show_tree: bool - Whether to print the radix tree for debugging (optional)
+
+Example:
+    workflow_metadata = {
+        'agent_id': 'generator_0',
+        'steps_to_execution_map': {'generator_0': 0, 'generator_1': 1, 'evaluator': 2},
+        'show_tree': False
+    }
+"""
+
+
 @dataclass
 class BaseReq(ABC):
     rid: Optional[Union[str, List[str]]] = field(default=None, kw_only=True)
@@ -243,7 +265,7 @@ class GenerateReqInput(BaseReq, APIServingTimingMixin):
     priority: Optional[int] = None
 
     # Workflow information injection
-    workflow_metadata: Optional[dict] = None
+    workflow_metadata: WorkflowMeta = None
 
     # Extra key for classifying the request (e.g. cache_salt)
     extra_key: Optional[Union[List[str], str]] = None
@@ -749,7 +771,7 @@ class TokenizedGenerateReqInput(BaseReq):
     priority: Optional[int] = None
 
     # Workflow metadata 
-    workflow_metadata: Optional[dict] = None
+    workflow_metadata: WorkflowMeta = None
 
     # Extra key for classifying the request (e.g. cache_salt)
     extra_key: Optional[str] = None
@@ -822,7 +844,7 @@ class EmbeddingReqInput(BaseReq, APIServingTimingMixin):
     # Routing key for routing-key schedule policy
     routing_key: Optional[str] = None
     # Workflow metadata
-    workflow_metadata: Optional[dict] = None
+    workflow_metadata: WorkflowMeta = None
 
     # For background responses (OpenAI responses API)
     background: bool = False
@@ -936,7 +958,7 @@ class TokenizedEmbeddingReqInput(BaseReq):
     # Priority for the request
     priority: Optional[int] = None
     # Workflow metadata
-    workflow_metadata: Optional[dict] = None
+    workflow_metadata: WorkflowMeta = None
     # The number of dimensions the resulting output embeddings should have. It is applicable for Matryoshka Embeddings.
     dimensions: Optional[int] = None
 
