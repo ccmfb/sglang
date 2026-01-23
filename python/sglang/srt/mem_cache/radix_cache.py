@@ -28,11 +28,23 @@ import sys
 import time
 from collections import defaultdict
 from functools import lru_cache, partial
-from typing import TYPE_CHECKING, Any, Iterator, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import torch
 
 logger = logging.getLogger(__name__)
+
+# Type alias for workflow metadata (matches definition in io_struct.py)
+# Defined locally to avoid circular imports
+WorkflowMeta = Optional[Dict[str, Any]]
+"""Workflow metadata passed through the request pipeline for cache-aware scheduling.
+
+Supports the following fields:
+- agent_id: str - Identifier for the agent making the request
+- steps_to_execution_map: Dict[str, int] - Mapping of agent_id to steps-to-execution
+  values for priority-aware cache eviction
+- show_tree: bool - Whether to print the radix tree for debugging (optional)
+"""
 
 from sglang.srt.disaggregation.kv_events import (
     AllBlocksCleared,
@@ -92,7 +104,7 @@ class TreeNode:
 
     counter = 0
 
-    def __init__(self, id: Optional[int] = None, priority: int = 0, workflow_metadata: dict | None = None):
+    def __init__(self, id: Optional[int] = None, priority: int = 0, workflow_metadata: WorkflowMeta = None):
         self.children = defaultdict(TreeNode)
         self.parent: TreeNode = None
         self.key: RadixKey = None
@@ -112,7 +124,9 @@ class TreeNode:
         # priority for priority-aware eviction
         self.priority = priority
 
-        self.workflow_metadata = workflow_metadata
+        # Workflow metadata: store only the agent_id needed for eviction decisions
+        # instead of the full dict (follows mini-sglang pattern)
+        self.agent_id: Optional[str] = workflow_metadata.get('agent_id') if workflow_metadata else None
         self.workflow_eviction_value: int | None = None
 
         self.id = TreeNode.counter if id is None else id
@@ -154,11 +168,11 @@ class TreeNode:
         return self.last_access_time < other.last_access_time
 
     def get_agent_leaf_memory(self):
-        if self.workflow_metadata is None: return 0
-        curr_agent = self.workflow_metadata['agent_id']
+        if self.agent_id is None: return 0
+        curr_agent = self.agent_id
         agent_leaf_size = 0
 
-        # This is a bit too hack-y
+        # Traverse up to find root node
         root_node = None
         stack = [self]
         while stack:
@@ -168,14 +182,13 @@ class TreeNode:
                 break
             stack.extend([cur_node.parent])
 
+        # Traverse down to find leaf nodes belonging to the same agent
         stack = list(root_node.children.values())
         while stack:
             cur_node = stack.pop()
             if len(cur_node.children) == 0:
-                if cur_node.lock_ref == 0 and cur_node.workflow_metadata is not None:
-                    if cur_node.workflow_metadata['agent_id'] == curr_agent:
-
-                        agent_leaf_size += len(cur_node.value)
+                if cur_node.lock_ref == 0 and cur_node.agent_id == curr_agent:
+                    agent_leaf_size += len(cur_node.value)
             else:
                 stack.extend(cur_node.children.values())
 
@@ -464,14 +477,16 @@ class RadixCache(BasePrefixCache):
             last_host_node=last_node,
         )
 
-    def insert(self, key: RadixKey, value=None, chunked=False, priority: int = 0, workflow_metadata: dict | None = None):
+    def insert(self, key: RadixKey, value=None, chunked=False, priority: int = 0, workflow_metadata: WorkflowMeta = None):
 
         # Updating and printing tree
         # =============================================
         if workflow_metadata is not None:
-            self.update_workflow_eviction_value(self.root_node, workflow_metadata['steps_to_execution_map'])
-            
-            if workflow_metadata['show_tree']:
+            steps_map = workflow_metadata.get('steps_to_execution_map', {})
+            if steps_map:
+                self.update_workflow_eviction_value(self.root_node, steps_map)
+
+            if workflow_metadata.get('show_tree', False):
                 print_tree(self.root_node)
         # =============================================
 
@@ -486,17 +501,15 @@ class RadixCache(BasePrefixCache):
         return self._insert_helper(self.root_node, key, value, priority, workflow_metadata=workflow_metadata)
 
     def update_workflow_eviction_value(self, node: TreeNode, value_map: dict):
-        """Updates workflow-aware eviction values."""
-        if node.parent is not None and node.workflow_metadata is not None:
-            agent_id = node.workflow_metadata['agent_id']
-            eviction_value = value_map[agent_id]
+        """Recursively updates workflow-aware eviction values based on steps_to_execution_map."""
+        if node.parent is not None and node.agent_id is not None:
+            eviction_value = value_map.get(node.agent_id, 9999999)
             node.workflow_eviction_value = eviction_value
-
-        if node.workflow_metadata is None:
+        else:
+            # Nodes without agent_id get lowest priority (highest eviction value)
             node.workflow_eviction_value = 9999999
 
-        children = node.children.items()
-        for _, child_node in children:
+        for child_node in node.children.values():
             self.update_workflow_eviction_value(child_node, value_map)
 
     def _page_align_keys(self, key: list) -> list:
@@ -637,8 +650,8 @@ class RadixCache(BasePrefixCache):
         while num_evicted < num_tokens and len(eviction_heap):
             _priority, x = heapq.heappop(eviction_heap)
 
-            if x.workflow_metadata is not None:
-                print(f'Evicting node with agent_id: {x.workflow_metadata['agent_id']}, and eviction value: {x.workflow_eviction_value}')
+            if x.agent_id is not None:
+                print(f'Evicting node with agent_id: {x.agent_id}, eviction_value: {x.workflow_eviction_value}')
 
             self.token_to_kv_pool_allocator.free(x.value)
             num_evicted += len(x.value)
@@ -739,7 +752,9 @@ class RadixCache(BasePrefixCache):
         new_node.lock_ref = child.lock_ref
         new_node.key = child.key[:split_len]
         new_node.value = child.value[:split_len]
-        new_node.workflow_metadata = child.workflow_metadata
+        # Copy workflow metadata (agent_id) to the new split node
+        new_node.agent_id = child.agent_id
+        new_node.workflow_eviction_value = child.workflow_eviction_value
         child.parent = new_node
         child.key = child.key[split_len:]
         child.value = child.value[split_len:]
@@ -752,7 +767,7 @@ class RadixCache(BasePrefixCache):
 
         return new_node
 
-    def _insert_helper(self, node: TreeNode, key: RadixKey, value, priority: int = 0, workflow_metadata: dict | None = None):
+    def _insert_helper(self, node: TreeNode, key: RadixKey, value, priority: int = 0, workflow_metadata: WorkflowMeta = None):
         # Convert None priority to 0
         if priority is None:
             priority = 0
@@ -785,11 +800,10 @@ class RadixCache(BasePrefixCache):
                 child_key = self.get_child_key_fn(key)
 
         if len(key):
-            new_node = TreeNode(priority=priority)
+            new_node = TreeNode(priority=priority, workflow_metadata=workflow_metadata)
             new_node.parent = node
             new_node.key = key
             new_node.value = value
-            new_node.workflow_metadata = workflow_metadata
             node.children[child_key] = new_node
             self.evictable_size_ += len(key)
             # Hash will be computed lazily during event emission
@@ -963,10 +977,8 @@ def print_tree(node, prefix="", is_last=True):
         key = node.key.token_ids
         key_str = str(key) if len(key) <= 5 else f"{key[:2]}...{key[-1]}"
         
-        if node.workflow_metadata is not None:
-            agent_id = node.workflow_metadata.get('agent_id')
-            
-            display = f"Key: {key_str} | {agent_id}: {node.workflow_eviction_value}"
+        if node.agent_id is not None:
+            display = f"Key: {key_str} | {node.agent_id}: {node.workflow_eviction_value}"
         else:
             display = f"Key: {key_str}" 
 
