@@ -60,6 +60,7 @@ class InsertParams:
     # General
     chunked: bool = False
     priority: int = 0
+    workflow_metadata: Optional[dict] = None
 
 
 @dataclasses.dataclass

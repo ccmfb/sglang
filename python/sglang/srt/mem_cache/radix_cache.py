@@ -28,11 +28,23 @@ import sys
 import time
 from collections import defaultdict
 from functools import lru_cache, partial
-from typing import TYPE_CHECKING, Any, Iterator, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import torch
 
 logger = logging.getLogger(__name__)
+
+# Type alias for workflow metadata (matches definition in io_struct.py)
+# Defined locally to avoid circular imports
+WorkflowMeta = Optional[Dict[str, Any]]
+"""Workflow metadata passed through the request pipeline for cache-aware scheduling.
+
+Supports the following fields:
+- agent_id: str - Identifier for the agent making the request
+- steps_to_execution_map: Dict[str, int] - Mapping of agent_id to steps-to-execution
+  values for priority-aware cache eviction
+- show_tree: bool - Whether to print the radix tree for debugging (optional)
+"""
 
 from sglang.srt.disaggregation.kv_events import (
     AllBlocksCleared,
@@ -56,8 +68,11 @@ from sglang.srt.mem_cache.evict_policy import (
     LRUStrategy,
     MRUStrategy,
     PriorityStrategy,
+    StepsToExecutionStrategy,
+    LMUStrategy,
 )
 from sglang.srt.mem_cache.hicache_storage import get_hash_str, hash_str_to_int64
+from sglang.srt.metrics.cache_timeseries import CacheTimeSeriesTracker
 
 if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import Req
@@ -97,7 +112,7 @@ class TreeNode:
 
     counter = 0
 
-    def __init__(self, id: Optional[int] = None, priority: int = 0):
+    def __init__(self, id: Optional[int] = None, priority: int = 0, workflow_metadata: WorkflowMeta = None):
         self.children = defaultdict(TreeNode)
         self.parent: TreeNode = None
         self.key: RadixKey = None
@@ -116,6 +131,11 @@ class TreeNode:
         self.hash_value: Optional[List[str]] = None
         # priority for priority-aware eviction
         self.priority = priority
+
+        # Workflow metadata: store only the agent_id needed for eviction decisions
+        # instead of the full dict (follows mini-sglang pattern)
+        self.agent_id: Optional[str] = workflow_metadata.get('agent_id') if workflow_metadata else None
+        self.workflow_eviction_value: int | None = None
 
         self.id = TreeNode.counter if id is None else id
         TreeNode.counter += 1
@@ -154,6 +174,33 @@ class TreeNode:
 
     def __lt__(self, other: "TreeNode"):
         return self.last_access_time < other.last_access_time
+
+    def get_agent_leaf_memory(self):
+        if self.agent_id is None: return 0
+        curr_agent = self.agent_id
+        agent_leaf_size = 0
+
+        # Traverse up to find root node
+        root_node = None
+        stack = [self]
+        while stack:
+            cur_node = stack.pop()
+            if not cur_node.parent:
+                root_node = cur_node
+                break
+            stack.extend([cur_node.parent])
+
+        # Traverse down to find leaf nodes belonging to the same agent
+        stack = list(root_node.children.values())
+        while stack:
+            cur_node = stack.pop()
+            if len(cur_node.children) == 0:
+                if cur_node.lock_ref == 0 and cur_node.agent_id == curr_agent:
+                    agent_leaf_size += len(cur_node.value)
+            else:
+                stack.extend(cur_node.children.values())
+
+        return agent_leaf_size
 
 
 def _check_extra_key(key0: RadixKey, key1: RadixKey):
@@ -273,6 +320,14 @@ class RadixCache(BasePrefixCache):
         if params.enable_metrics:
             self.init_metrics_collector()
 
+        # Initialize time series tracker if enabled
+        self.timeseries_tracker: Optional[CacheTimeSeriesTracker] = None
+        if params.enable_cache_timeseries:
+            self.timeseries_tracker = CacheTimeSeriesTracker(
+                max_history_seconds=params.cache_timeseries_history,
+                snapshot_interval=params.cache_timeseries_interval,
+            )
+
         if self.token_to_kv_pool_allocator:
             self.device = self.token_to_kv_pool_allocator.device
         else:
@@ -297,6 +352,12 @@ class RadixCache(BasePrefixCache):
             self.eviction_strategy: EvictionStrategy = FILOStrategy()
         elif self.eviction_policy == "priority":
             self.eviction_strategy: EvictionStrategy = PriorityStrategy()
+        elif self.eviction_policy == "steps-to-execution":
+            print('Using steps-to-execution eviction policy!')
+            self.eviction_strategy: EvictionStrategy = StepsToExecutionStrategy()
+        elif self.eviction_policy == 'lmu':
+            print('using lmu')
+            self.eviction_strategy: EvictionStrategy = LMUStrategy()
         else:
             raise ValueError(
                 f"Unknown eviction policy: {self.eviction_policy}. Supported policies: 'lru', 'lfu', 'fifo', 'mru', 'filo', 'priority'."
@@ -411,6 +472,13 @@ class RadixCache(BasePrefixCache):
             value = torch.cat(value)
         else:
             value = torch.empty((0,), dtype=torch.int64, device=self.device)
+
+        # Record hit/miss tokens for time series tracking
+        if self.timeseries_tracker is not None:
+            requested_tokens = len(key)
+            matched_tokens = len(value)
+            self.timeseries_tracker.record_match(matched_tokens, requested_tokens)
+
         return MatchResult(
             device_indices=value,
             last_device_node=last_node,
@@ -424,14 +492,38 @@ class RadixCache(BasePrefixCache):
         key = params.key
         value = params.value
         priority = params.priority
+        workflow_metadata = params.workflow_metadata
+
+        # Updating and printing tree
+        # =============================================
+        if workflow_metadata is not None:
+            steps_map = workflow_metadata.get('steps_to_execution_map', {})
+            if steps_map:
+                self.update_workflow_eviction_value(self.root_node, steps_map)
+
+            if workflow_metadata.get('show_tree', False):
+                print_tree(self.root_node)
+        # =============================================
 
         if value is None:
             value = torch.tensor(key.token_ids, dtype=torch.int64)
 
         key, value = self.maybe_bigram_convert(key, value)
 
-        prefix_len = self._insert_helper(self.root_node, key, value, priority)
+        prefix_len = self._insert_helper(self.root_node, key, value, priority, workflow_metadata=workflow_metadata)
         return InsertResult(prefix_len=prefix_len)
+
+    def update_workflow_eviction_value(self, node: TreeNode, value_map: dict):
+        """Recursively updates workflow-aware eviction values based on steps_to_execution_map."""
+        if node.parent is not None and node.agent_id is not None:
+            eviction_value = value_map.get(node.agent_id, 9999999)
+            node.workflow_eviction_value = eviction_value
+        else:
+            # Nodes without agent_id get lowest priority (highest eviction value)
+            node.workflow_eviction_value = 9999999
+
+        for child_node in node.children.values():
+            self.update_workflow_eviction_value(child_node, value_map)
 
     def _page_align_keys(self, key: list) -> list:
         if self.page_size == 1:
@@ -468,8 +560,9 @@ class RadixCache(BasePrefixCache):
         # Radix Cache takes one ref in memory pool
         if is_insert:
             priority = getattr(req, "priority", 0) or 0
+            workflow_metadata = getattr(req, "workflow_metadata", None) or None
             result = self.insert(
-                InsertParams(key=radix_key, value=values, priority=priority)
+                InsertParams(key=radix_key, value=values, priority=priority, workflow_metadata=workflow_metadata)
             )
             new_prefix_len = result.prefix_len
             # Free the duplicates that were already in the tree
@@ -511,6 +604,7 @@ class RadixCache(BasePrefixCache):
                 value=values,
                 chunked=chunked,
                 priority=getattr(req, "priority", 0) or 0,
+                workflow_metadata=getattr(req, "workflow_metadata", None) or None,
             )
         )
         new_prefix_len = result.prefix_len
@@ -575,6 +669,9 @@ class RadixCache(BasePrefixCache):
         num_evicted = 0
         while num_evicted < num_tokens and len(eviction_heap):
             _priority, x = heapq.heappop(eviction_heap)
+
+            if x.agent_id is not None:
+                print(f'Evicting node with agent_id: {x.agent_id}, eviction_value: {x.workflow_eviction_value}')
 
             self.token_to_kv_pool_allocator.free(x.value)
             num_evicted += len(x.value)
@@ -676,6 +773,9 @@ class RadixCache(BasePrefixCache):
         new_node.lock_ref = child.lock_ref
         new_node.key = child.key[:split_len]
         new_node.value = child.value[:split_len].clone()
+        # Copy workflow metadata (agent_id) to the new split node
+        new_node.agent_id = child.agent_id
+        new_node.workflow_eviction_value = child.workflow_eviction_value
         child.parent = new_node
         child.key = child.key[split_len:]
         child.value = child.value[split_len:].clone()
@@ -688,7 +788,7 @@ class RadixCache(BasePrefixCache):
 
         return new_node
 
-    def _insert_helper(self, node: TreeNode, key: RadixKey, value, priority: int = 0):
+    def _insert_helper(self, node: TreeNode, key: RadixKey, value, priority: int = 0, workflow_metadata: WorkflowMeta = None):
         # Convert None priority to 0
         if priority is None:
             priority = 0
@@ -721,7 +821,7 @@ class RadixCache(BasePrefixCache):
                 child_key = self.get_child_key_fn(key)
 
         if len(key):
-            new_node = TreeNode(priority=priority)
+            new_node = TreeNode(priority=priority, workflow_metadata=workflow_metadata)
             new_node.parent = node
             new_node.key = key
             new_node.value = value.clone()
@@ -854,6 +954,67 @@ class RadixCache(BasePrefixCache):
         self.kv_event_queue = []
         return events
 
+    def take_timeseries_snapshot(self):
+        """Take a snapshot of current cache state for time series tracking.
+
+        This method should be called periodically (e.g., during log_prefill_stats).
+        """
+        if self.timeseries_tracker is not None:
+            self.timeseries_tracker.take_snapshot(self)
+
+    def get_timeseries_stats(self):
+        """Get time series statistics for API response.
+
+        Returns:
+            Dictionary with cache statistics, or None if tracking is disabled.
+        """
+        if self.timeseries_tracker is None:
+            return None
+        return self.timeseries_tracker.get_stats_dict()
+
+    def get_timeseries_history(self, window_seconds=None):
+        """Get time series history for graphing.
+
+        Args:
+            window_seconds: Time window in seconds. If None, returns all history.
+
+        Returns:
+            List of snapshot dictionaries, or None if tracking is disabled.
+        """
+        if self.timeseries_tracker is None:
+            return None
+        return self.timeseries_tracker.get_history(window_seconds)
+
+
+def print_tree(node, prefix="", is_last=True):
+    """
+    Recursively prints the Radix Tree structure in ASCII format.
+    """
+    connector = "└── " if is_last else "├── "
+    
+    if node.key is None or (len(node.key.token_ids) == 0 and node.parent is None):
+        display = "[ROOT]"
+    else:
+        key = node.key.token_ids
+        key_str = str(key) if len(key) <= 5 else f"{key[:2]}...{key[-1]}"
+        
+        if node.agent_id is not None:
+            display = f"Key: {key_str} | {node.agent_id}: {node.workflow_eviction_value}"
+        else:
+            display = f"Key: {key_str}" 
+
+    print(f"{prefix}{connector}{display}")
+
+    # 2. Prepare prefix for the next level
+    child_prefix = prefix + ("    " if is_last else "│   ")
+    
+    # 3. Sort children safely
+    # Keys in children can be ints or tuples (if bigram/extra_key), so we sort by string representation
+    sorted_children = sorted(node.children.items(), key=lambda x: str(x[0]))
+    count = len(sorted_children)
+    
+    for i, (token_id, child_node) in enumerate(sorted_children):
+        print_tree(child_node, child_prefix, is_last=(i == count - 1))
 
 if __name__ == "__main__":
     tree = RadixCache.create_simulated()

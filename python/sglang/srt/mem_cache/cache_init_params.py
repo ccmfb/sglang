@@ -25,6 +25,11 @@ class CacheInitParams:
     enable_metrics: bool = False
     enable_kv_cache_events: bool = False
 
+    # Time series cache metrics tracking
+    enable_cache_timeseries: bool = False
+    cache_timeseries_interval: float = 5.0
+    cache_timeseries_history: float = 300.0
+
     enable_mamba_extra_buffer: bool = False
 
     pp_rank: int = 0

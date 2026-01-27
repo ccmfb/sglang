@@ -44,3 +44,22 @@ class PriorityStrategy(EvictionStrategy):
     def get_priority(self, node: "TreeNode") -> Tuple[int, float]:
         # Return (priority, last_access_time) so lower priority nodes are evicted first
         return (node.priority, node.last_access_time)
+
+
+class StepsToExecutionStrategy(EvictionStrategy):
+    """Workflow-aware eviction: Caches that won't be needed in the near future are evicted first."""
+
+    def get_priority(self, node) -> int:
+        if node.workflow_eviction_value is None:
+            return -9999999
+
+        return -node.workflow_eviction_value
+
+class LMUStrategy(EvictionStrategy):
+    """Workflow-aware eviction: Cache associated to agents with small memory usage (and thus shorter re-compute time is evicted first)."""
+
+    def get_priority(self, node) -> float:
+        # return len(node.value)
+        return node.get_agent_leaf_memory()
+
+

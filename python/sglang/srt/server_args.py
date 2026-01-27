@@ -166,7 +166,7 @@ NSA_CHOICES = [
     "trtllm",
 ]
 
-RADIX_EVICTION_POLICY_CHOICES = ["lru", "lfu"]
+RADIX_EVICTION_POLICY_CHOICES = ["lru", "lfu", "steps-to-execution", "lmu"]
 
 RL_ON_POLICY_TARGET_CHOICES = ["fsdp"]
 
@@ -331,6 +331,11 @@ class ServerArgs:
     prefill_delayer_token_usage_low_watermark: Optional[float] = None
     prefill_delayer_forward_passes_buckets: Optional[List[float]] = None
     prefill_delayer_wait_seconds_buckets: Optional[List[float]] = None
+
+    # Cache time series tracking
+    enable_cache_timeseries: bool = False
+    cache_timeseries_interval: float = 5.0
+    cache_timeseries_history: float = 300.0
 
     # Runtime options
     device: Optional[str] = None
@@ -3061,6 +3066,25 @@ class ServerArgs:
             nargs="+",
             default=None,
             help="Custom buckets for prefill delayer wait seconds histogram. 0 will be auto-added.",
+        )
+
+        # Cache time series tracking
+        parser.add_argument(
+            "--enable-cache-timeseries",
+            action="store_true",
+            help="Enable time series tracking for cache metrics (utilization, hit rate, tokens).",
+        )
+        parser.add_argument(
+            "--cache-timeseries-interval",
+            type=float,
+            default=ServerArgs.cache_timeseries_interval,
+            help="Interval in seconds between cache time series snapshots.",
+        )
+        parser.add_argument(
+            "--cache-timeseries-history",
+            type=float,
+            default=ServerArgs.cache_timeseries_history,
+            help="Maximum history to keep for cache time series in seconds.",
         )
 
         # Runtime options
